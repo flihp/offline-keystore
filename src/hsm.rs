@@ -19,7 +19,7 @@ use std::{
     str::FromStr,
 };
 use thiserror::Error;
-use vsss_rs::{Feldman, FeldmanVerifier, Share};
+use vsss_rs::{Feldman, FeldmanVerifier};
 use yubihsm::{
     authentication::{self, Key, DEFAULT_AUTHENTICATION_KEY_ID},
     object::{Id, Label, Type},
@@ -51,6 +51,8 @@ const THRESHOLD: usize = 3;
 sa::const_assert!(THRESHOLD <= SHARES);
 
 const ATTEST_EXT: &str = ".attest.cert.pem";
+
+pub type Share = vsss_rs::Share<SHARE_LEN>;
 
 #[derive(Error, Debug)]
 pub enum HsmError {
@@ -429,7 +431,7 @@ impl Hsm {
             verifier.as_ref().display()
         );
         // vector used to collect shares
-        let mut shares: Vec<Share<SHARE_LEN>> = Vec::new();
+        let mut shares: Vec<Share> = Vec::new();
 
         // deserialize verifier:
         // verifier was serialized to output/verifier.json in the provisioning ceremony
@@ -500,7 +502,7 @@ impl Hsm {
                 };
 
                 // construct a Share from the decoded hex string
-                let share: Share<SHARE_LEN> =
+                let share: Share =
                     match Share::try_from(&share_vec[..]) {
                         Ok(share) => share,
                         Err(_) => {
@@ -908,7 +910,7 @@ mod tests {
         secret
     }
 
-    fn deserialize_share(share: &str) -> Result<Share<SHARE_LEN>> {
+    fn deserialize_share(share: &str) -> Result<Share> {
         // filter out whitespace to keep hex::decode happy
         let share: String =
             share.chars().filter(|c| !c.is_whitespace()).collect();
@@ -976,7 +978,7 @@ mod tests {
             serde_json::from_str(VERIFIER)
                 .context("Failed to deserialize FeldmanVerifier from JSON.")?;
 
-        let share: Share<SHARE_LEN> =
+        let share: Share =
             Share::try_from([0u8; SHARE_LEN].as_ref())
                 .context("Failed to create Share from static array.")?;
 
@@ -1010,7 +1012,7 @@ mod tests {
 
     #[test]
     fn recover_secret() -> Result<()> {
-        let mut shares: Vec<Share<SHARE_LEN>> = Vec::new();
+        let mut shares: Vec<Share> = Vec::new();
         for share in SHARE_ARRAY {
             shares.push(deserialize_share(share)?);
         }
