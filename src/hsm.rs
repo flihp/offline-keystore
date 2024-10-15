@@ -3,7 +3,6 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use anyhow::{Context, Result};
-use hex::ToHex;
 use log::{debug, error, info};
 use p256::elliptic_curve::PrimeField;
 use p256::{NonZeroScalar, ProjectivePoint, Scalar, SecretKey};
@@ -11,9 +10,8 @@ use pem_rfc7468::LineEnding;
 use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
 use static_assertions as sa;
 use std::collections::HashSet;
-use std::fs::File;
 use std::{
-    fs::{self, OpenOptions},
+    fs,
     io::{self, Read, Write},
     path::Path,
     str::FromStr,
@@ -46,13 +44,14 @@ const KEY_LEN: usize = 32;
 const SHARE_LEN: usize = KEY_LEN + 1;
 const LABEL: &str = "backup";
 
-const SHARES: usize = 5;
+pub const SHARES: usize = 5;
 const THRESHOLD: usize = 3;
 sa::const_assert!(THRESHOLD <= SHARES);
 
 const ATTEST_EXT: &str = ".attest.cert.pem";
 
 pub type Share = vsss_rs::Share<SHARE_LEN>;
+pub type Shares = [Share; SHARES];
 
 #[derive(Error, Debug)]
 pub enum HsmError {
@@ -202,7 +201,7 @@ impl Hsm {
 
     /// create a new wrap key, cut it up into shares, print those shares to
     /// `print_dev` & put the wrap key in the HSM
-    pub fn new_split_wrap(&self, print_dev: &Path) -> Result<()> {
+    pub fn new_split_wrap(&self) -> Result<Shares> {
         info!(
             "Generating wrap / backup key from HSM PRNG with label: \"{}\"",
             LABEL.to_string()
@@ -241,41 +240,6 @@ impl Hsm {
         self.storage
             .write_to_output(VERIFIER_FILE_NAME, verifier.as_bytes())?;
 
-        println!(
-            "\nWARNING: The wrap / backup key has been created and stored in the\n\
-            YubiHSM. It will now be split into {} key shares and each share\n\
-            will be individually written to {}. Before each keyshare is\n\
-            printed, the operator will be prompted to ensure the appropriate key\n\
-            custodian is present in front of the printer.\n\n\
-            Press enter to begin the key share recording process ...",
-            SHARES,
-            print_dev.display(),
-        );
-
-        wait_for_line()?;
-
-        let mut print_file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(print_dev)?;
-
-        for (i, share) in shares.iter().enumerate() {
-            let share_num = i + 1;
-            println!(
-                "When key custodian {num} is ready, press enter to print share \
-                {num}",
-                num = share_num,
-            );
-            wait_for_line()?;
-
-            print_share(&mut print_file, i, SHARES, share.as_ref())?;
-            println!(
-                "When key custodian {} has collected their key share, press enter",
-                share_num,
-            );
-            wait_for_line()?;
-        }
-
         // put 32 random bytes into the YubiHSM as an Aes256Ccm wrap key
         info!("Storing wrap key in YubiHSM.");
         let id = self.client
@@ -299,7 +263,7 @@ impl Hsm {
         // key with any other id the HSM isn't in the state we think it is.
         assert_eq!(id, WRAP_ID);
 
-        Ok(())
+        Ok(shares)
     }
 
     // create a new auth key, remove the default auth key, then export the new
@@ -502,18 +466,17 @@ impl Hsm {
                 };
 
                 // construct a Share from the decoded hex string
-                let share: Share =
-                    match Share::try_from(&share_vec[..]) {
-                        Ok(share) => share,
-                        Err(_) => {
-                            println!(
-                                "Failed to convert share entered to Share \
+                let share: Share = match Share::try_from(&share_vec[..]) {
+                    Ok(share) => share,
+                    Err(_) => {
+                        println!(
+                            "Failed to convert share entered to Share \
                                 type. The value entered is the wrong length \
                                 ... try again."
-                            );
-                            continue;
-                        }
-                    };
+                        );
+                        continue;
+                    }
+                };
 
                 if verifier.verify(&share) {
                     // if we're going to switch from paper to CDs for key
@@ -681,13 +644,6 @@ const AUTH_DELEGATED: Capability = Capability::all();
 const AUTH_ID: Id = 2;
 const AUTH_LABEL: &str = "admin";
 
-/// This function is used when displaying key shares as a way for the user to
-/// control progression through the key shares displayed in the terminal.
-fn wait_for_line() -> Result<()> {
-    let _ = io::stdin().lines().next().unwrap()?;
-    Ok(())
-}
-
 fn are_you_sure() -> Result<bool> {
     print!("Are you sure? (y/n):");
     io::stdout().flush()?;
@@ -699,180 +655,6 @@ fn are_you_sure() -> Result<bool> {
     debug!("got: \"{}\"", buffer);
 
     Ok(buffer == "y")
-}
-
-// Character pitch is assumed to be 10 CPI
-const CHARACTERS_PER_INCH: usize = 10;
-
-// Horizontal position location is measured in 1/60th of an inch
-const UNITS_PER_INCH: usize = 60;
-
-const UNITS_PER_CHARACTER: usize = UNITS_PER_INCH / CHARACTERS_PER_INCH;
-
-// Page is 8.5" wide.  Using 17/2 to stay in integers.
-const UNITS_PER_LINE: usize = 17 * UNITS_PER_INCH / 2;
-
-const ESC: u8 = 0x1b;
-const LF: u8 = 0x0a;
-const FF: u8 = 0x0c;
-const CR: u8 = 0x0d;
-
-fn print_centered_line(print_file: &mut File, text: &[u8]) -> Result<()> {
-    let text_width_units = text.len() * UNITS_PER_CHARACTER;
-
-    let remaining_space = UNITS_PER_LINE - text_width_units;
-    let half_remaining = remaining_space / 2;
-
-    let n_h = (half_remaining / 256) as u8;
-    let n_l = (half_remaining % 256) as u8;
-
-    print_file.write_all(&[ESC, b'$', n_l, n_h])?;
-
-    print_file.write_all(text)?;
-
-    Ok(())
-}
-
-fn print_whitespace_notice(
-    print_file: &mut File,
-    data_type: &str,
-) -> Result<()> {
-    print_file.write_all(&[
-        ESC, b'$', 0, 0, // Move to left edge
-    ])?;
-
-    let options = textwrap::Options::new(70)
-        .initial_indent("     NOTE: ")
-        .subsequent_indent("           ");
-    let text = format!("Whitespace is a visual aid only and must be omitted when entering the {data_type}");
-
-    for line in textwrap::wrap(&text, options) {
-        print_file.write_all(&[CR, LF])?;
-        print_file.write_all(line.as_bytes())?;
-    }
-
-    Ok(())
-}
-
-// Format a key share for printing with Epson ESC/P
-#[rustfmt::skip]
-pub fn print_share(
-    print_file: &mut File,
-    share_idx: usize,
-    share_count: usize,
-    share_data: &[u8],
-) -> Result<()> {
-    // ESC/P specification recommends sending CR before LF and FF.  The latter commands
-    // print the contents of the data buffer before their movement.  This can cause
-    // double printing (bolding) in certain situations.  Sending CR clears the data buffer
-    // without printing so sending it first avoids any double printing.
-
-    print_file.write_all(&[
-        ESC, b'@', // Initialize Printer
-        ESC, b'x', 1, // Select NLQ mode
-        ESC, b'k', 1, // Select San Serif font
-        ESC, b'E', // Select Bold
-    ])?;
-    print_centered_line(print_file, b"Oxide Offline Keystore")?;
-    print_file.write_all(&[
-        CR, LF,
-        ESC, b'F', // Deselect Bold
-    ])?;
-
-    print_centered_line(print_file, format!("Recovery Key Share {} of {}",
-            share_idx + 1, share_count).as_bytes())?;
-    print_file.write_all(&[
-        CR, LF,
-        CR, LF,
-        ESC, b'D', 8, 20, 32, 44, 0, // Set horizontal tab stops
-    ])?;
-
-    for (i, chunk) in share_data
-        .encode_hex::<String>()
-        .as_bytes()
-        .chunks(8)
-        .enumerate()
-    {
-        if i % 4 == 0 {
-            print_file.write_all(&[CR, LF])?;
-        }
-        print_file.write_all(&[b'\t'])?;
-        print_file.write_all(chunk)?;
-    }
-
-    print_file.write_all(&[CR, LF])?;
-
-    print_whitespace_notice(print_file, "recovery key share")?;
-
-    print_file.write_all(&[CR, FF])?;
-    Ok(())
-}
-
-// Format a key share for printing with Epson ESC/P
-#[rustfmt::skip]
-pub fn print_password(
-    print_dev: &Path,
-    password: &Zeroizing<String>,
-) -> Result<()> {
-    println!(
-        "\nWARNING: The HSM authentication password has been created and stored in\n\
-        the YubiHSM. It will now be printed to {}.\n\
-        Before this password is printed, the operator will be prompted to ensure\n\
-        that the appropriate participant is in front of the printer to recieve\n\
-        the printout.\n\n\
-        Press enter to print the HSM password ...",
-        print_dev.display(),
-    );
-
-    wait_for_line()?;
-
-    let mut print_file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(print_dev)?;
-
-    // ESC/P specification recommends sending CR before LF and FF.  The latter commands
-    // print the contents of the data buffer before their movement.  This can cause
-    // double printing (bolding) in certain situations.  Sending CR clears the data buffer
-    // without printing so sending it first avoids any double printing.
-
-    print_file.write_all(&[
-        ESC, b'@', // Initialize Printer
-        ESC, b'x', 1, // Select NLQ mode
-        ESC, b'k', 1, // Select San Serif font
-        ESC, b'E', // Select Bold
-    ])?;
-    print_centered_line(&mut print_file, b"Oxide Offline Keystore")?;
-    print_file.write_all(&[
-        CR, LF,
-        ESC, b'F', // Deselect Bold
-    ])?;
-    print_centered_line(&mut print_file, b"HSM Password")?;
-    print_file.write_all(&[
-        CR, LF,
-        CR, LF,
-        ESC, b'D', 8, 20, 32, 44, 0, // Set horizontal tab stops
-        CR, LF,
-    ])?;
-
-    for (i, chunk) in password
-        .as_bytes()
-        .chunks(8)
-        .enumerate()
-    {
-        if i % 4 == 0 {
-            print_file.write_all(&[CR, LF])?;
-        }
-        print_file.write_all(&[b'\t'])?;
-        print_file.write_all(chunk)?;
-    }
-
-    print_file.write_all(&[CR, LF])?;
-
-    print_whitespace_notice(&mut print_file, "HSM password")?;
-
-    print_file.write_all(&[CR, FF])?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -978,9 +760,8 @@ mod tests {
             serde_json::from_str(VERIFIER)
                 .context("Failed to deserialize FeldmanVerifier from JSON.")?;
 
-        let share: Share =
-            Share::try_from([0u8; SHARE_LEN].as_ref())
-                .context("Failed to create Share from static array.")?;
+        let share: Share = Share::try_from([0u8; SHARE_LEN].as_ref())
+            .context("Failed to create Share from static array.")?;
 
         assert!(!verifier.verify(&share));
 
