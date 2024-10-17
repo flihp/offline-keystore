@@ -411,8 +411,8 @@ impl Hsm {
             serde_json::from_str(&verifier)?;
 
         // get enough shares to recover backup key
-        let mut shares: Vec<Share> = Vec::new();
-        let share_getter =
+        let mut shares: Zeroizing<Vec<Share>> = Zeroizing::new(Vec::new());
+        let mut share_getter =
             ShareGetter::new(share_method, Some(share_device), verifier)?;
         for _ in 1..=THRESHOLD {
             let share = match share_getter.get_share()? {
@@ -497,13 +497,17 @@ impl Hsm {
                 info.object_type, info.object_id
             );
 
-            let info = self.client.get_object_info(info.object_id, info.object_type)?;
+            let info = self
+                .client
+                .get_object_info(info.object_id, info.object_type)?;
             if info.object_type == Type::AsymmetricKey {
-                info!("Getting attestation for key for key w/ id: \"{}\"...",
-                      info.object_id);
-                let attest_cert =
-                    self.client.sign_attestation_certificate(info.object_id,
-                                                             None)?;
+                info!(
+                    "Getting attestation for key for key w/ id: \"{}\"...",
+                    info.object_id
+                );
+                let attest_cert = self
+                    .client
+                    .sign_attestation_certificate(info.object_id, None)?;
 
                 let attest_cert = pem_rfc7468::encode_string(
                     "CERTIFICATE",
@@ -516,8 +520,10 @@ impl Hsm {
                     attest_cert.as_bytes(),
                 )?;
             } else {
-                debug!("imported object is not an asymmetric key, no \
-                       attestation available");
+                debug!(
+                    "imported object is not an asymmetric key, no \
+                       attestation available"
+                );
             }
         }
         Ok(())

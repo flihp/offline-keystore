@@ -4,17 +4,18 @@
 
 use anyhow::Result;
 use clap::ValueEnum;
+use glob::Paths;
+use log::debug;
 use p256::{ProjectivePoint, Scalar};
 use std::{
     env,
-    fs::ReadDir,
     io::{self, Read, Write},
     path::{Path, PathBuf},
 };
 use vsss_rs::FeldmanVerifier;
 
 use crate::{
-    burner::DEFAULT_CDR_DEV,
+    burner::{Cdr, DEFAULT_CDR_DEV},
     hsm::{Share, SHARE_LEN},
 };
 
@@ -28,21 +29,6 @@ pub enum ShareMethod {
     Stdin,
 }
 
-// if share_method is `Cdrom`
-// - for i in THRESHOLD
-//   - prompt for share in cd drive
-//   - read share from device
-//   - verify share (maybe)
-//if share_method is `Iso`
-// - for i in THRESHOLD
-//   - if share_method is `Cdrom`
-//     - prompt for share in cd drive & wait for key press
-//   - if share_method is `Iso`
-//     - get one share from share_dir
-//   - read share from device
-//   - verify share
-// - create Cdr
-// find the shares in `share_device`
 /// A type to handle all of the details associated with getting shares into
 /// OKS for recovering backups.
 /// The structure here is a guess and will likely change to form itself around
@@ -50,7 +36,7 @@ pub enum ShareMethod {
 pub struct ShareGetter {
     share_method: ShareMethod,
     share_device: Option<PathBuf>,
-    share_dir: Option<ReadDir>,
+    share_globs: Option<Paths>,
     verifier: Verifier,
 }
 
@@ -71,7 +57,7 @@ impl ShareGetter {
                 Self {
                     share_method,
                     share_device,
-                    share_dir: None,
+                    share_globs: None,
                     verifier,
                 }
             }
@@ -84,14 +70,14 @@ impl ShareGetter {
                 Self {
                     share_method,
                     share_device,
-                    share_dir: None,
+                    share_globs: None,
                     verifier,
                 }
             }
             ShareMethod::Stdin => Self {
                 share_method,
                 share_device: None,
-                share_dir: None,
+                share_globs: None,
                 verifier,
             },
         })
@@ -105,7 +91,7 @@ impl ShareGetter {
     //   invalid shares ... seems like an error would work
     // basically an iterator
     // TODO: return Result<Option<Zeroizing<Share>>>
-    pub fn get_share(&self) -> Result<Option<Share>> {
+    pub fn get_share(&mut self) -> Result<Option<Share>> {
         match self.share_method {
             ShareMethod::Cdrom => self._get_cdrom_share(),
             ShareMethod::Iso => self._get_iso_share(),
@@ -117,8 +103,46 @@ impl ShareGetter {
         todo!("ShareGetter::_get_cdrom_share");
     }
 
-    fn _get_iso_share(&self) -> Result<Option<Share>> {
-        todo!("ShareGetter::_get_iso_share");
+    /// Get shares from ISOs. We iterate over files in the self.share_device
+    /// directory looking for files that match the glob `share_*-of-*.iso. We
+    /// store the state for this iteration in self.share_globs.
+    fn _get_iso_share(&mut self) -> Result<Option<Share>> {
+        let dir = match &self.share_device {
+            Some(s) => s,
+            None => &env::current_dir()?,
+        };
+        debug!("getting shares from ISOs in {}", dir.display());
+
+        if self.share_globs.is_none() {
+            // this is pretty terrible
+            let path = dir.join("share_*-of-*.iso");
+            let path = path.to_str().unwrap();
+            self.share_globs = Some(glob::glob(path)?);
+        }
+        // Get a reference to the Paths out of the option
+        // NOTE: this should be simplified by creating separate types for the
+        // different getters
+        let share_globs = self
+            .share_globs
+            .as_mut()
+            .ok_or(anyhow::anyhow!("this shouldn't happen"))?;
+
+        let share_iso = match share_globs.next() {
+            Some(r) => match r {
+                Ok(iso) => iso,
+                Err(e) => return Err(e.into()),
+            },
+            None => {
+                self.share_globs = None;
+                return Ok(None);
+            }
+        };
+
+        let mut cdr = Cdr::new(Some(share_iso))?;
+        cdr.mount()?;
+        let share = cdr.read_share()?;
+
+        Ok(Some(share))
     }
 
     /// Loop prompting the user to enter a keyshare & getting input from them

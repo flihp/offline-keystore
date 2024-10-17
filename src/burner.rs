@@ -13,6 +13,8 @@ use tempfile::{tempdir, TempDir};
 use thiserror::Error;
 use zeroize::Zeroizing;
 
+use crate::hsm::Share;
+
 pub const DEFAULT_CDR_DEV: &str = "/dev/cdrom";
 
 #[derive(Debug, Error)]
@@ -120,8 +122,15 @@ impl Cdr {
         Ok(passwd)
     }
 
-    pub fn read_share(&self) -> Result<Zeroizing<Vec<u8>>> {
-        todo!("read_share");
+    pub fn read_share(&self) -> Result<Share> {
+        let path = self.tmpdir.as_ref().join("share");
+        let share = fs::read(&path).with_context(|| {
+            format!("failed to read from file: {}", path.display())
+        })?;
+        let share = Share::try_from(share.as_ref()).with_context(|| {
+            "data read from cdrom can't be converted to a Share"
+        })?;
+        Ok(share)
     }
 
     fn _mount<P: AsRef<Path>>(&self, device: &P) -> Result<()> {
