@@ -562,16 +562,19 @@ pub fn dump_sn(client: &Client) -> Result<()> {
     Ok(())
 }
 
-pub fn reset(client: &Client) -> Result<()> {
+pub fn reset(client: &Client, yes_no: bool) -> Result<()> {
     let info = client.device_info()?;
     info!("resetting device with SN: {}", info.serial_number);
 
-    if are_you_sure()? {
+    if !yes_no {
+        client.reset_device()?;
+    } else if are_you_sure()? {
         client.reset_device()?;
         debug!("reset successful");
     } else {
         info!("reset aborted");
     }
+
     Ok(())
 }
 

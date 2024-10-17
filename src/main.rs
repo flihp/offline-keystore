@@ -450,12 +450,20 @@ fn main() -> Result<()> {
                     share_method,
                     share_device,
                 } => {
-                    let share_method =
-                        share_method.unwrap_or_else(ShareMethod::default);
-                    let share_device =
-                        share_device.unwrap_or_else(|| "/dev/cdrom".into());
+                    oks::hsm::reset(&hsm.client, false)?;
+                    let hsm = Hsm::new(
+                        1,
+                        "password",
+                        storage.clone(),
+                        !no_backup,
+                        args.transport,
+                    )?;
                     hsm.collect_attest_cert()?;
-                    hsm.restore_wrap(verifier, share_method, share_device)?;
+                    hsm.restore_wrap(
+                        verifier,
+                        share_method.unwrap_or_else(ShareMethod::default),
+                        share_device.unwrap_or_else(|| "/dev/cdrom".into()),
+                    )?;
                     hsm.restore_all(backups)?;
                     info!("Deleting default authentication key");
                     oks::hsm::delete(&hsm.client, 1, Type::AuthenticationKey)

@@ -187,7 +187,7 @@ fn main() -> Result<()> {
             oks::hsm::delete(&client, id, kind)
         }
         Command::Info => oks::hsm::dump_info(&client),
-        Command::Reset => oks::hsm::reset(&client),
+        Command::Reset => oks::hsm::reset(&client, true),
         Command::Restore { file } => util::restore(&client, file),
     }
 }
