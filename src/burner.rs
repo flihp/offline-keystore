@@ -27,6 +27,9 @@ pub enum CdrError {
 
     #[error("Failed to mount Cdr.")]
     MountFail,
+
+    #[error("Failed to eject Cdr.")]
+    EjectFail,
 }
 
 pub struct Cdr {
@@ -46,6 +49,21 @@ impl Cdr {
             tmpdir: tempdir()?,
             loopback: None,
         })
+    }
+
+    pub fn eject(&self) -> Result<()> {
+        let mut cmd = Command::new("eject");
+        let output = cmd.arg(&self.device).output().with_context(|| {
+            format!("failed to run the \"eject\" command: \"{:?}\"", cmd)
+        })?;
+
+        if !output.status.success() {
+            warn!("command failed with status: {}", output.status);
+            warn!("stderr: \"{}\"", String::from_utf8_lossy(&output.stderr));
+            return Err(CdrError::EjectFail.into());
+        }
+
+        Ok(())
     }
 
     pub fn mount(&mut self) -> Result<()> {

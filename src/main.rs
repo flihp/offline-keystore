@@ -225,6 +225,7 @@ fn get_passwd<P: AsRef<Path>>(
 
 /// get a new password from the environment or by issuing a challenge the user
 fn get_new_passwd(hsm: Option<&Hsm>) -> Result<Zeroizing<String>> {
+    // TODO: this is probably wrong
     match env::var(ENV_NEW_PASSWORD).ok() {
         // prefer new password from env above all else
         Some(s) => {
@@ -458,7 +459,9 @@ fn main() -> Result<()> {
                         !no_backup,
                         args.transport,
                     )?;
+                    // TODO: enable / lock log
                     hsm.collect_attest_cert()?;
+                    // if share_method is ShareMethod::Iso default share_device to pwd
                     hsm.restore_wrap(
                         verifier,
                         share_method.unwrap_or_else(ShareMethod::default),
@@ -467,6 +470,7 @@ fn main() -> Result<()> {
                     hsm.restore_all(backups)?;
                     info!("Deleting default authentication key");
                     oks::hsm::delete(&hsm.client, 1, Type::AuthenticationKey)
+                    // TODO: dump log
                 }
                 HsmCommand::SerialNumber => oks::hsm::dump_sn(&hsm.client),
             }
