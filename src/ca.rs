@@ -476,7 +476,7 @@ pub fn sign(
             }
         } else if filename.ends_with(DCSRSPEC_EXT) {
             let storage = Storage::new(Some(state.to_str().unwrap()));
-            let mut hsm = Hsm::new(
+            let hsm = Hsm::new(
                 0x0002,
                 &passwd_from_env("OKM_HSM_PKCS11_AUTH")?,
                 storage,
