@@ -12,7 +12,7 @@ use static_assertions as sa;
 use std::collections::HashSet;
 use std::{
     fs,
-    io::{self, Read, Write},
+    io::{self, Write},
     path::Path,
     str::FromStr,
 };
@@ -29,6 +29,7 @@ use zeroize::Zeroizing;
 
 use crate::{
     config::{self, KeySpec, Transport, BACKUP_EXT, KEYSPEC_EXT},
+    shares::{ShareGetter, ShareMethod},
     storage::{Storage, VERIFIER_FILE_NAME},
 };
 
@@ -41,7 +42,7 @@ const DOMAIN: Domain = Domain::all();
 const ID: Id = 0x1;
 const SEED_LEN: usize = 32;
 const KEY_LEN: usize = 32;
-const SHARE_LEN: usize = KEY_LEN + 1;
+pub const SHARE_LEN: usize = KEY_LEN + 1;
 const LABEL: &str = "backup";
 
 pub const SHARES: usize = 5;
@@ -73,6 +74,8 @@ pub enum HsmError {
     SplitKeyFailed { e: vsss_rs::Error },
     #[error("your yubihms is broke")]
     Version,
+    #[error("Not enough shares.")]
+    NotEnoughShares,
 }
 
 pub struct Alphabet {
@@ -388,14 +391,17 @@ impl Hsm {
     /// This function prompts the user to enter M of the N backup shares. It
     /// uses these shares to reconstitute the wrap key. This wrap key can then
     /// be used to restore previously backed up / export wrapped keys.
-    pub fn restore_wrap<P: AsRef<Path>>(&self, verifier: P) -> Result<()> {
+    pub fn restore_wrap<P: AsRef<Path>>(
+        &self,
+        verifier: P,
+        share_method: ShareMethod,
+        share_device: P,
+    ) -> Result<()> {
         info!("Restoring HSM from backup");
         info!(
             "Restoring backup / wrap key from shares with verifier: {}",
             verifier.as_ref().display()
         );
-        // vector used to collect shares
-        let mut shares: Vec<Share> = Vec::new();
 
         // deserialize verifier:
         // verifier was serialized to output/verifier.json in the provisioning ceremony
@@ -405,107 +411,24 @@ impl Hsm {
             serde_json::from_str(&verifier)?;
 
         // get enough shares to recover backup key
+        let mut shares: Vec<Share> = Vec::new();
+        let share_getter =
+            ShareGetter::new(share_method, Some(share_device), verifier)?;
         for _ in 1..=THRESHOLD {
-            // attempt to get a single share until the custodian enters a
-            // share that we can verify
-            loop {
-                // clear the screen, move cursor to (0,0), & prompt user
-                print!("\x1B[2J\x1B[1;1H");
-                print!("Enter share\n: ");
-                io::stdout().flush()?;
-                // get share from stdin
-                let mut share = String::new();
-                let share = match io::stdin().read_line(&mut share) {
-                    Ok(count) => match count {
-                        0 => {
-                            // Ctrl^D / EOF
-                            continue;
-                        }
-                        // 33 bytes -> 66 characters + 1 newline
-                        67 => share,
-                        _ => {
-                            print!(
-                                "\nexpected 67 characters, got {}.\n\n\
-                                Press any key to try again ...",
-                                share.len()
-                            );
-                            io::stdout().flush()?;
-
-                            // wait for a keypress / 1 byte from stdin
-                            let _ = io::stdin().read(&mut [0u8]).unwrap();
-                            continue;
-                        }
-                    },
-                    Err(e) => {
-                        print!(
-                            "Error from `Stdin::read_line`: {}\n\n\
-                            Press any key to try again ...",
-                            e
-                        );
-                        io::stdout().flush()?;
-
-                        // wait for a keypress / 1 byte from stdin
-                        let _ = io::stdin().read(&mut [0u8]).unwrap();
-                        continue;
-                    }
-                };
-
-                // drop all whitespace from line entered, interpret it as a
-                // hex string that we decode
-                let share: String =
-                    share.chars().filter(|c| !c.is_whitespace()).collect();
-                let share_vec = match hex::decode(share) {
-                    Ok(share) => share,
-                    Err(_) => {
-                        println!(
-                            "Failed to decode Share. The value entered \
-                                 isn't a valid hex string: try again."
-                        );
-                        continue;
-                    }
-                };
-
-                // construct a Share from the decoded hex string
-                let share: Share = match Share::try_from(&share_vec[..]) {
-                    Ok(share) => share,
-                    Err(_) => {
-                        println!(
-                            "Failed to convert share entered to Share \
-                                type. The value entered is the wrong length \
-                                ... try again."
-                        );
-                        continue;
-                    }
-                };
-
-                if verifier.verify(&share) {
-                    // if we're going to switch from paper to CDs for key
-                    // share persistence this is the most obvious place to
-                    // put a keyshare on to a CD w/ lots of refactoring
-                    shares.push(share);
-                    print!(
-                        "\nShare verified!\n\nPress any key to continue ..."
-                    );
-                    io::stdout().flush()?;
-
-                    // wait for a keypress / 1 byte from stdin
-                    let _ = io::stdin().read(&mut [0u8]).unwrap();
+            let share = match share_getter.get_share()? {
+                Some(s) => s,
+                None => {
+                    info!("share getter ran out of shares");
                     break;
-                } else {
-                    print!(
-                        "\nFailed to verify share :(\n\nPress any key to \
-                        try again ..."
-                    );
-                    io::stdout().flush()?;
-
-                    // wait for a keypress / 1 byte from stdin
-                    let _ = io::stdin().read(&mut [0u8]).unwrap();
-                    continue;
                 }
-            }
+            };
+            debug!("Got share: {:?}", share);
+            shares.push(share);
         }
 
-        print!("\x1B[2J\x1B[1;1H");
+        if shares.len() < THRESHOLD {
+            return Err(HsmError::NotEnoughShares.into());
+        }
 
         let scalar = Feldman::<THRESHOLD, SHARES>::combine_shares::<
             Scalar,

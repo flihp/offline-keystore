@@ -6,5 +6,6 @@ pub mod burner;
 pub mod ca;
 pub mod config;
 pub mod hsm;
+pub mod shares;
 pub mod storage;
 pub mod util;

@@ -17,6 +17,7 @@ use oks::{
     burner::{Burner, Cdr},
     config::{Transport, ENV_NEW_PASSWORD, ENV_PASSWORD},
     hsm::{Hsm, Shares, SHARES},
+    shares::ShareMethod,
     storage::{Storage, DEFAULT_INPUT, DEFAULT_STATE, DEFAULT_VERIFIER},
 };
 
@@ -173,6 +174,18 @@ enum HsmCommand {
 
         #[clap(long, env, default_value = DEFAULT_VERIFIER)]
         verifier: PathBuf,
+
+        #[clap(long, env)]
+        /// Method used to collect shares of backup key
+        share_method: Option<ShareMethod>,
+
+        #[clap(long, env)]
+        /// Path to device used to collect keyshares. If `--share-method` is
+        /// `cdrom` then this is the path to the CD device. If
+        /// `--share-method` is `iso` then `share-device` is the path to the
+        /// directory where the share isos are stored. The names of these
+        /// files must be the same as when created by oks.
+        share_device: Option<PathBuf>,
     },
 
     /// Get serial number from YubiHSM and dump to console.
@@ -431,8 +444,17 @@ fn main() -> Result<()> {
                     hsm.replace_default_auth(&passwd_new)
                 }
                 HsmCommand::Generate { key_spec } => hsm.generate(&key_spec),
-                HsmCommand::Restore { backups, verifier } => {
-                    hsm.restore_wrap(verifier)?;
+                HsmCommand::Restore {
+                    backups,
+                    verifier,
+                    share_method,
+                    share_device,
+                } => {
+                    let share_method =
+                        share_method.unwrap_or_else(ShareMethod::default);
+                    let share_device =
+                        share_device.unwrap_or_else(|| "/dev/cdrom".into());
+                    hsm.restore_wrap(verifier, share_method, share_device)?;
                     hsm.restore_all(backups)?;
                     info!("Deleting default authentication key");
                     oks::hsm::delete(&hsm.client, 1, Type::AuthenticationKey)
