@@ -454,6 +454,7 @@ fn main() -> Result<()> {
                         share_method.unwrap_or_else(ShareMethod::default);
                     let share_device =
                         share_device.unwrap_or_else(|| "/dev/cdrom".into());
+                    hsm.collect_attest_cert()?;
                     hsm.restore_wrap(verifier, share_method, share_device)?;
                     hsm.restore_all(backups)?;
                     info!("Deleting default authentication key");

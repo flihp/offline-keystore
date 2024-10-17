@@ -381,7 +381,7 @@ impl Hsm {
         )?;
 
         self.storage.write_to_output(
-            &format!("{}.attest.cert.pem", spec.label),
+            &format!("{}{}", spec.label, ATTEST_EXT),
             attest_cert.as_bytes(),
         )?;
 
@@ -490,12 +490,35 @@ impl Hsm {
             let message: Message = serde_json::from_str(&json)?;
 
             debug!("deserialized message: {:?}", &message);
-            let handle = self.client.import_wrapped(WRAP_ID, message)?;
+            let info = self.client.import_wrapped(WRAP_ID, message)?;
 
             info!(
                 "Imported {} key with object id {}.",
-                handle.object_type, handle.object_id
+                info.object_type, info.object_id
             );
+
+            let info = self.client.get_object_info(info.object_id, info.object_type)?;
+            if info.object_type == Type::AsymmetricKey {
+                info!("Getting attestation for key for key w/ id: \"{}\"...",
+                      info.object_id);
+                let attest_cert =
+                    self.client.sign_attestation_certificate(info.object_id,
+                                                             None)?;
+
+                let attest_cert = pem_rfc7468::encode_string(
+                    "CERTIFICATE",
+                    LineEnding::default(),
+                    attest_cert.as_slice(),
+                )?;
+
+                self.storage.write_to_output(
+                    &format!("{}{}", info.label, ATTEST_EXT),
+                    attest_cert.as_bytes(),
+                )?;
+            } else {
+                debug!("imported object is not an asymmetric key, no \
+                       attestation available");
+            }
         }
         Ok(())
     }
@@ -513,7 +536,7 @@ impl Hsm {
             &attest_cert,
         )?;
 
-        let attest_path = format!("{}.{}", sn, ATTEST_EXT);
+        let attest_path = format!("{}{}", sn, ATTEST_EXT);
         debug!("writing attestation cert to: {}", attest_path);
 
         self.storage
