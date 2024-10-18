@@ -7,7 +7,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use env_logger::Builder;
 use log::{debug, error, info, LevelFilter};
 use std::{
-    env, io::{self, Write},
+    env,
+    io::{self, Write},
     path::{Path, PathBuf},
 };
 use yubihsm::object::{Id, Type};
@@ -340,8 +341,10 @@ fn burn_shares(
             // what happens if cd tray isn't closed
             burner.burn()?;
             println!("success!");
-            print!("\nRemove CD from drive, close the drive, then press enter to \
-                   continue ...");
+            print!(
+                "\nRemove CD from drive, close the drive, then press enter to \
+                   continue ..."
+            );
 
             wait_for_line()?;
         } else {
@@ -372,8 +375,10 @@ fn burn_password(
         io::stdout().flush()?;
         burner.burn()?;
         println!("success!");
-        print!("\nRemove CD from drive, close the drive, then press enter to \
-               continue ...");
+        print!(
+            "\nRemove CD from drive, close the drive, then press enter to \
+               continue ..."
+        );
         wait_for_line()
     } else {
         // write to pwd

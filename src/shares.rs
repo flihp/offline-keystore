@@ -105,8 +105,10 @@ impl ShareGetter {
         cdr.eject()?;
 
         // clear the screen, move cursor to (0,0), & prompt user
-        print!("Place keyshare CD in the drive, close the drive, then press \n\
-               any key to continue: ");
+        print!(
+            "Place keyshare CD in the drive, close the drive, then press \n\
+               any key to continue: "
+        );
         io::stdout().flush()?;
         // wait for u ser input
         let _ = io::stdin().read(&mut [0u8]).unwrap();
