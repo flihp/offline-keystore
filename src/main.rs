@@ -7,7 +7,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use env_logger::Builder;
 use log::{debug, error, info, LevelFilter};
 use std::{
-    env, io,
+    env, io::{self, Write},
     path::{Path, PathBuf},
 };
 use yubihsm::object::{Id, Type};
@@ -319,7 +319,7 @@ fn burn_shares(
     println!(
         "\nThe wrap / backup key has been created and stored in the\n\
         YubiHSM. It will now be split into {} key shares and each share\n\
-        will be written to separate CDs.\n\n",
+        will be written to separate CDs.\n",
         SHARES,
     );
 
@@ -330,15 +330,19 @@ fn burn_shares(
         burner.write_share(share.as_ref())?;
         if !iso_only {
             burner.eject()?;
-            println!(
-                "Insert blank media into the CD writer & press enter to burn share[{}] ...",
+            print!(
+                "\nInsert blank media into the CD writer & press enter to burn share[{}] ... ",
                 i + 1
             );
             wait_for_line()?;
-
-            // error handling: be resilient to tray not closed?
+            print!("\nStarting the burning process ... please be patient ... ");
+            io::stdout().flush()?;
+            // what happens if cd tray isn't closed
             burner.burn()?;
-            println!("Remove CD from drive then press enter.");
+            println!("success!");
+            print!("\nRemove CD from drive, close the drive, then press enter to \
+                   continue ...");
+
             wait_for_line()?;
         } else {
             // write ISOs to pwd
@@ -359,14 +363,17 @@ fn burn_password(
     if !iso_only {
         burner.eject()?;
         print!(
-            "\nThe HSM authentication password has been created and stored in\n\
-            the YubiHSM. It will now be written to CDR media. Insert a blank CD\n\
-            into the drive and press enter to write auth value to CD ..."
+            "\nThe HSM authentication password has been created and will now\n\
+            be burned to CD. Insert a blank CD into the drive, close the\n\
+            drive, then press any key to begin the burning process ..."
         );
         wait_for_line()?;
-
+        print!("\nStarting the burning process ... please be patient ... ");
+        io::stdout().flush()?;
         burner.burn()?;
-        println!("Remove CD from drive then press enter.");
+        println!("success!");
+        print!("\nRemove CD from drive, close the drive, then press enter to \
+               continue ...");
         wait_for_line()
     } else {
         // write to pwd
@@ -377,6 +384,7 @@ fn burn_password(
 /// This function is used when displaying key shares as a way for the user to
 /// control progression through the key shares displayed in the terminal.
 fn wait_for_line() -> Result<()> {
+    io::stdout().flush()?;
     let _ = io::stdin().lines().next().unwrap()?;
     Ok(())
 }

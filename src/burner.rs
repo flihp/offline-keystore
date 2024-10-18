@@ -316,16 +316,16 @@ impl Burner {
         use tempfile::NamedTempFile;
 
         let iso = NamedTempFile::new()?;
-        self.to_iso(iso)?;
+        self.to_iso(&iso)?;
 
         let mut cmd = Command::new("cdrecord");
         let output = cmd
             .arg("-eject")
             .arg("-data")
-            .arg(self.tmp.as_ref())
+            .arg(iso.path())
+            .arg(format!("dev={}", self.device.display()))
             .arg("gracetime=0")
             .arg("timeout=1000")
-            .arg(format!("dev={}", self.device.display()))
             .output()
             .with_context(|| {
                 format!(
