@@ -124,9 +124,10 @@ impl ShareGetter {
     /// directory looking for files that match the glob `share_*-of-*.iso. We
     /// store the state for this iteration in self.share_globs.
     fn _get_iso_share(&mut self) -> Result<Option<Share>> {
+        let pwd = env::current_dir()?;
         let dir = match &self.share_device {
             Some(s) => s,
-            None => &env::current_dir()?,
+            None => &pwd,
         };
         debug!("getting shares from ISOs in {}", dir.display());
 
