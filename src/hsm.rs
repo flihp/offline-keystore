@@ -13,11 +13,12 @@ use std::collections::HashSet;
 use std::{
     fs,
     io::{self, Write},
+    ops::Deref,
     path::Path,
     str::FromStr,
 };
 use thiserror::Error;
-use vsss_rs::{Feldman, FeldmanVerifier};
+use vsss_rs::Feldman;
 use yubihsm::{
     authentication::{self, Key, DEFAULT_AUTHENTICATION_KEY_ID},
     object::{Id, Label, Type},
@@ -29,7 +30,6 @@ use zeroize::Zeroizing;
 
 use crate::{
     config::{self, KeySpec, Transport, BACKUP_EXT, KEYSPEC_EXT},
-    shares::{ShareGetter, ShareMethod},
     storage::{Storage, VERIFIER_FILE_NAME},
 };
 
@@ -391,40 +391,8 @@ impl Hsm {
     /// This function prompts the user to enter M of the N backup shares. It
     /// uses these shares to reconstitute the wrap key. This wrap key can then
     /// be used to restore previously backed up / export wrapped keys.
-    pub fn restore_wrap<P: AsRef<Path>>(
-        &self,
-        verifier: P,
-        share_method: ShareMethod,
-        share_device: P,
-    ) -> Result<()> {
+    pub fn restore_wrap(&self, shares: Zeroizing<Vec<Share>>) -> Result<()> {
         info!("Restoring HSM from backup");
-        info!(
-            "Restoring backup / wrap key from shares with verifier: {}",
-            verifier.as_ref().display()
-        );
-
-        // deserialize verifier:
-        // verifier was serialized to output/verifier.json in the provisioning ceremony
-        // it must be included in and deserialized from the ceremony inputs
-        let verifier = fs::read_to_string(verifier)?;
-        let verifier: FeldmanVerifier<Scalar, ProjectivePoint, SHARE_LEN> =
-            serde_json::from_str(&verifier)?;
-
-        // get enough shares to recover backup key
-        let mut shares: Zeroizing<Vec<Share>> = Zeroizing::new(Vec::new());
-        let mut share_getter =
-            ShareGetter::new(share_method, Some(share_device), verifier)?;
-        for _ in 1..=THRESHOLD {
-            let share = match share_getter.get_share()? {
-                Some(s) => s,
-                None => {
-                    info!("share getter ran out of shares");
-                    break;
-                }
-            };
-            debug!("Got share: {:?}", share);
-            shares.push(share);
-        }
 
         if shares.len() < THRESHOLD {
             return Err(HsmError::NotEnoughShares.into());
@@ -433,7 +401,7 @@ impl Hsm {
         let scalar = Feldman::<THRESHOLD, SHARES>::combine_shares::<
             Scalar,
             SHARE_LEN,
-        >(&shares)
+        >(shares.deref())
         .map_err(|e| HsmError::CombineKeyFailed { e })?;
 
         let nz_scalar = NonZeroScalar::from_repr(scalar.to_repr());

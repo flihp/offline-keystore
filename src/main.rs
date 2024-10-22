@@ -7,8 +7,9 @@ use clap::{Parser, Subcommand, ValueEnum};
 use env_logger::Builder;
 use log::{debug, error, info, LevelFilter};
 use std::{
-    env,
+    env, fs,
     io::{self, Write},
+    ops::{Deref, DerefMut},
     path::{Path, PathBuf},
 };
 use yubihsm::object::{Id, Type};
@@ -17,10 +18,12 @@ use zeroize::Zeroizing;
 use oks::{
     burner::{Burner, Cdr},
     config::{Transport, ENV_NEW_PASSWORD, ENV_PASSWORD},
-    hsm::{Hsm, Shares, SHARES},
-    shares::ShareMethod,
+    hsm::{Hsm, Share, Shares, SHARES},
+    shares::{CdrShares, IsoShares, ShareMethod, TermShares, Verifier},
     storage::{Storage, DEFAULT_INPUT, DEFAULT_STATE, DEFAULT_VERIFIER},
 };
+
+const DEFAULT_SHARE_METHOD: ShareMethod = ShareMethod::Cdrom;
 
 const PASSWD_PROMPT: &str = "Enter new password: ";
 const PASSWD_PROMPT2: &str = "Enter password again to confirm: ";
@@ -176,9 +179,10 @@ enum HsmCommand {
         #[clap(long, env, default_value = DEFAULT_VERIFIER)]
         verifier: PathBuf,
 
-        #[clap(long, env)]
+        #[clap(long, env, default_value_t = DEFAULT_SHARE_METHOD)]
+        #[arg(value_enum)]
         /// Method used to collect shares of backup key
-        share_method: Option<ShareMethod>,
+        share_method: ShareMethod,
 
         #[clap(long, env)]
         /// Path to device used to collect keyshares. If `--share-method` is
@@ -394,6 +398,28 @@ fn wait_for_line() -> Result<()> {
     Ok(())
 }
 
+// get all available shares using the provided ShareMethod
+fn get_shares(
+    method: ShareMethod,
+    path: Option<PathBuf>,
+    verifier: Verifier,
+) -> Result<Zeroizing<Vec<Share>>> {
+    // construct share iterator from params
+    let share_itr: Box<dyn Iterator<Item = Result<Zeroizing<Share>>>> =
+        match method {
+            ShareMethod::Cdrom => Box::new(CdrShares::new(verifier, path)),
+            ShareMethod::Iso => Box::new(IsoShares::new(verifier, path)?),
+            ShareMethod::Stdin => Box::new(TermShares::new(verifier)),
+        };
+
+    let mut shares: Zeroizing<Vec<Share>> = Zeroizing::new(Vec::new());
+    for share in share_itr {
+        shares.deref_mut().push(*share?.deref());
+    }
+
+    Ok(shares)
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
 
@@ -464,6 +490,15 @@ fn main() -> Result<()> {
                     share_method,
                     share_device,
                 } => {
+                    // deserialize verifier
+                    let verifier = fs::read_to_string(verifier)?;
+                    let verifier: Verifier = serde_json::from_str(&verifier)?;
+                    let shares =
+                        get_shares(share_method, share_device, verifier)?;
+
+                    // construct ShareSrc
+                    // get shares
+                    // pass shares to `restore_wrap`
                     oks::hsm::reset(&hsm.client, false)?;
                     let hsm = Hsm::new(
                         1,
@@ -475,11 +510,7 @@ fn main() -> Result<()> {
                     // TODO: enable / lock log
                     hsm.collect_attest_cert()?;
                     // if share_method is ShareMethod::Iso default share_device to pwd
-                    hsm.restore_wrap(
-                        verifier,
-                        share_method.unwrap_or_else(ShareMethod::default),
-                        share_device.unwrap_or_else(|| "/dev/cdrom".into()),
-                    )?;
+                    hsm.restore_wrap(shares)?;
                     hsm.restore_all(backups)?;
                     info!("Deleting default authentication key");
                     oks::hsm::delete(&hsm.client, 1, Type::AuthenticationKey)

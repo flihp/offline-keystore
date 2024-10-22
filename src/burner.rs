@@ -140,14 +140,15 @@ impl Cdr {
         Ok(passwd)
     }
 
-    pub fn read_share(&self) -> Result<Share> {
+    pub fn read_share(&self) -> Result<Zeroizing<Share>> {
         let path = self.tmpdir.as_ref().join("share");
         let share = fs::read(&path).with_context(|| {
             format!("failed to read from file: {}", path.display())
         })?;
-        let share = Share::try_from(share.as_ref()).with_context(|| {
-            "data read from cdrom can't be converted to a Share"
-        })?;
+        let share =
+            Zeroizing::new(Share::try_from(share.as_ref()).with_context(
+                || "data read from cdrom can't be converted to a Share",
+            )?);
         Ok(share)
     }
 

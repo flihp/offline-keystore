@@ -10,16 +10,18 @@ use p256::{ProjectivePoint, Scalar};
 use std::{
     env,
     io::{self, Read, Write},
+    ops::Deref,
     path::{Path, PathBuf},
 };
 use vsss_rs::FeldmanVerifier;
+use zeroize::Zeroizing;
 
 use crate::{
-    burner::{Cdr, DEFAULT_CDR_DEV},
+    burner::Cdr,
     hsm::{Share, SHARE_LEN},
 };
 
-type Verifier = FeldmanVerifier<Scalar, ProjectivePoint, SHARE_LEN>;
+pub type Verifier = FeldmanVerifier<Scalar, ProjectivePoint, SHARE_LEN>;
 
 #[derive(ValueEnum, Clone, Debug, Default, PartialEq)]
 pub enum ShareMethod {
@@ -29,154 +31,174 @@ pub enum ShareMethod {
     Stdin,
 }
 
-/// A type to handle all of the details associated with getting shares into
-/// OKS for recovering backups.
-/// The structure here is a guess and will likely change to form itself around
-/// the mechanics that we're currently trying to figure out here.
-pub struct ShareGetter {
-    share_method: ShareMethod,
-    share_device: Option<PathBuf>,
-    share_globs: Option<Paths>,
+pub struct IsoShares {
+    directory: PathBuf,
+    share_glob: Option<Paths>,
     verifier: Verifier,
 }
 
-impl ShareGetter {
+impl IsoShares {
     pub fn new<P: AsRef<Path>>(
-        share_method: ShareMethod,
-        share_device: Option<P>,
         verifier: Verifier,
+        directory: Option<P>,
     ) -> Result<Self> {
-        // probably a candidate for a trait, builder and a concrete type
-        // for each ShareMethod
-        Ok(match share_method {
-            ShareMethod::Cdrom => {
-                let share_device = Some(match share_device {
-                    Some(s) => PathBuf::from(s.as_ref()),
-                    None => PathBuf::from(DEFAULT_CDR_DEV),
-                });
-                Self {
-                    share_method,
-                    share_device,
-                    share_globs: None,
-                    verifier,
-                }
-            }
-            ShareMethod::Iso => {
-                let current_dir = env::current_dir()?;
-                let share_device = Some(match share_device {
-                    Some(d) => PathBuf::from(d.as_ref()),
-                    None => current_dir,
-                });
-                Self {
-                    share_method,
-                    share_device,
-                    share_globs: None,
-                    verifier,
-                }
-            }
-            ShareMethod::Stdin => Self {
-                share_method,
-                share_device: None,
-                share_globs: None,
-                verifier,
-            },
+        let current_dir = env::current_dir()?;
+        let directory = match directory {
+            Some(d) => PathBuf::from(d.as_ref()),
+            None => current_dir,
+        };
+
+        Ok(IsoShares {
+            directory,
+            share_glob: None,
+            verifier,
         })
     }
+}
 
-    // get one share via using the provided `ShareMethod`
-    // returns Some(Share) until all available shares have been got
-    //   NOTE: this type should probably not know about the threshold, only
-    //   the limit
-    // may make sense to add the verifier here so we can filter out / handle
-    //   invalid shares ... seems like an error would work
-    // basically an iterator
-    // TODO: return Result<Option<Zeroizing<Share>>>
-    pub fn get_share(&mut self) -> Result<Option<Share>> {
-        match self.share_method {
-            ShareMethod::Cdrom => self._get_cdrom_share(),
-            ShareMethod::Iso => self._get_iso_share(),
-            ShareMethod::Stdin => self._get_stdin_share(),
+impl Iterator for IsoShares {
+    type Item = Result<Zeroizing<Share>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        debug!("getting shares from ISOs in {}", self.directory.display());
+
+        if self.share_glob.is_none() {
+            let path = self.directory.join("share_*-of-*.iso");
+            let path = path.to_str().unwrap();
+            let glob = match glob::glob(path) {
+                Ok(paths) => paths,
+                Err(e) => return Some(Err(e.into())),
+            };
+            self.share_glob = Some(glob);
+        }
+
+        let share_glob = match self
+            .share_glob
+            .as_mut()
+            .ok_or(anyhow::anyhow!("this shouldn't happen"))
+        {
+            Ok(paths) => paths,
+            Err(e) => return Some(Err(e)),
+        };
+
+        let share_iso = match share_glob.next() {
+            Some(r) => match r {
+                Ok(iso) => iso,
+                Err(e) => return Some(Err(e.into())),
+            },
+            None => return None,
+        };
+
+        let mut cdr = match Cdr::new(Some(share_iso)) {
+            Ok(cdr) => cdr,
+            Err(e) => return Some(Err(e)),
+        };
+        match cdr.mount() {
+            Ok(()) => (),
+            Err(e) => return Some(Err(e)),
+        };
+        let share = match cdr.read_share() {
+            Ok(share) => share,
+            Err(e) => return Some(Err(e)),
+        };
+
+        match verify(&self.verifier, &share) {
+            Ok(b) => {
+                if b {
+                    Some(Ok(share))
+                } else {
+                    Some(Err(anyhow::anyhow!("verification failed")))
+                }
+            }
+            Err(e) => Some(Err(e)),
         }
     }
+}
 
-    fn _get_cdrom_share(&self) -> Result<Option<Share>> {
-        let mut cdr = Cdr::new(self.share_device.as_ref())?;
+pub struct CdrShares {
+    device: Option<PathBuf>,
+    verifier: Verifier,
+}
 
-        cdr.eject()?;
+impl CdrShares {
+    pub fn new<P: AsRef<Path>>(verifier: Verifier, device: Option<P>) -> Self {
+        let device = device.map(|p| PathBuf::from(p.as_ref()));
+        Self { device, verifier }
+    }
+}
 
-        // clear the screen, move cursor to (0,0), & prompt user
+impl Iterator for CdrShares {
+    type Item = Result<Zeroizing<Share>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut cdr = match Cdr::new(self.device.as_ref()) {
+            Ok(cdr) => cdr,
+            Err(e) => return Some(Err(e)),
+        };
+
+        match cdr.eject() {
+            Ok(()) => (),
+            Err(e) => return Some(Err(e)),
+        }
+
         print!(
             "Place keyshare CD in the drive, close the drive, then press \n\
                any key to continue: "
         );
-        io::stdout().flush()?;
-        // wait for u ser input
+        match io::stdout().flush() {
+            Ok(()) => (),
+            Err(e) => return Some(Err(e.into())),
+        }
+        // wait for user input
         let _ = io::stdin().read(&mut [0u8]).unwrap();
 
-        cdr.mount()?;
-        let share = cdr.read_share()?;
+        // TODO: retry loop
+        match cdr.mount() {
+            Ok(()) => (),
+            Err(e) => return Some(Err(e)),
+        }
+        let share = match cdr.read_share() {
+            Ok(share) => share,
+            Err(e) => return Some(Err(e)),
+        };
         println!("\nOK");
 
-        Ok(Some(share))
-    }
-
-    /// Get shares from ISOs. We iterate over files in the self.share_device
-    /// directory looking for files that match the glob `share_*-of-*.iso. We
-    /// store the state for this iteration in self.share_globs.
-    fn _get_iso_share(&mut self) -> Result<Option<Share>> {
-        let pwd = env::current_dir()?;
-        let dir = match &self.share_device {
-            Some(s) => s,
-            None => &pwd,
-        };
-        debug!("getting shares from ISOs in {}", dir.display());
-
-        if self.share_globs.is_none() {
-            // this is pretty terrible
-            let path = dir.join("share_*-of-*.iso");
-            let path = path.to_str().unwrap();
-            self.share_globs = Some(glob::glob(path)?);
-        }
-        // Get a reference to the Paths out of the option
-        // NOTE: this should be simplified by creating separate types for the
-        // different getters
-        let share_globs = self
-            .share_globs
-            .as_mut()
-            .ok_or(anyhow::anyhow!("this shouldn't happen"))?;
-
-        let share_iso = match share_globs.next() {
-            Some(r) => match r {
-                Ok(iso) => iso,
-                Err(e) => return Err(e.into()),
-            },
-            None => {
-                self.share_globs = None;
-                return Ok(None);
+        match verify(&self.verifier, &share) {
+            Ok(b) => {
+                if b {
+                    Some(Ok(share))
+                } else {
+                    Some(Err(anyhow::anyhow!("verification failed")))
+                }
             }
-        };
-
-        let mut cdr = Cdr::new(Some(share_iso))?;
-        cdr.mount()?;
-        let share = cdr.read_share()?;
-
-        Ok(Some(share))
+            Err(e) => Some(Err(e)),
+        }
     }
+}
 
-    /// Loop prompting the user to enter a keyshare & getting input from them
-    /// until we get get something that we can construct a Share from. We
-    /// don't verify the share, but we do ensure it's the correct size and
-    /// valid hex.
-    /// There's no logical upper bound on the number of times a user will need
-    /// to enter shares since it's so error prone. Calling this function will
-    /// never return None.
-    fn _get_stdin_share(&self) -> Result<Option<Share>> {
+pub struct TermShares {
+    verifier: Verifier,
+}
+
+impl TermShares {
+    pub fn new(verifier: Verifier) -> Self {
+        Self { verifier }
+    }
+}
+
+impl Iterator for TermShares {
+    type Item = Result<Zeroizing<Share>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
         // get share from stdin
         loop {
             // clear the screen, move cursor to (0,0), & prompt user
             print!("\x1B[2J\x1B[1;1H");
             print!("Enter share\n: ");
-            io::stdout().flush()?;
+            match io::stdout().flush() {
+                Ok(()) => (),
+                Err(e) => return Some(Err(e.into())),
+            }
 
             let mut share = String::new();
             let share = match io::stdin().read_line(&mut share) {
@@ -193,10 +215,16 @@ impl ShareGetter {
                             Press any key to try again ...",
                             share.len()
                         );
-                        io::stdout().flush()?;
+                        match io::stdout().flush() {
+                            Ok(()) => (),
+                            Err(e) => return Some(Err(e.into())),
+                        }
 
                         // wait for a keypress / 1 byte from stdin
-                        let _ = io::stdin().read(&mut [0u8]).unwrap();
+                        match io::stdin().read_exact(&mut [0u8]) {
+                            Ok(_) => (),
+                            Err(e) => return Some(Err(e.into())),
+                        };
                         continue;
                     }
                 },
@@ -206,7 +234,10 @@ impl ShareGetter {
                         Press any key to try again ...",
                         e
                     );
-                    io::stdout().flush()?;
+                    match io::stdout().flush() {
+                        Ok(_) => (),
+                        Err(e) => return Some(Err(e.into())),
+                    }
 
                     // wait for a keypress / 1 byte from stdin
                     let _ = io::stdin().read(&mut [0u8]).unwrap();
@@ -231,7 +262,7 @@ impl ShareGetter {
 
             // construct a Share from the decoded hex string
             let share = match Share::try_from(&share_vec[..]) {
-                Ok(share) => share,
+                Ok(share) => Zeroizing::new(share),
                 Err(_) => {
                     println!(
                         "Failed to convert share entered to the Share type.\n\
@@ -241,25 +272,36 @@ impl ShareGetter {
                 }
             };
 
-            if self.verifier.verify(&share) {
-                print!("\nShare verified!\n\nPress any key to continue ...");
-                io::stdout().flush()?;
+            let verified = match verify(&self.verifier, &share) {
+                Ok(v) => v,
+                Err(e) => return Some(Err(e)),
+            };
 
-                // wait for a keypress / 1 byte from stdin
-                let _ = io::stdin().read(&mut [0u8]).unwrap();
-                print!("\x1B[2J\x1B[1;1H");
-                break Ok(Some(share));
-            } else {
-                print!(
-                    "\nFailed to verify share :(\n\nPress any key to \
-                    try again ..."
-                );
-                io::stdout().flush()?;
-
-                // wait for a keypress / 1 byte from stdin
-                let _ = io::stdin().read(&mut [0u8]).unwrap();
-                continue;
+            if verified {
+                break Some(Ok(share));
             }
         }
+    }
+}
+
+fn verify(verifier: &Verifier, share: &Zeroizing<Share>) -> Result<bool> {
+    if verifier.verify(share.deref()) {
+        print!("\nShare verified!\n\nPress any key to continue ...");
+        io::stdout().flush()?;
+
+        // wait for a keypress / 1 byte from stdin
+        let _ = io::stdin().read(&mut [0u8]).unwrap();
+        print!("\x1B[2J\x1B[1;1H");
+        Ok(true)
+    } else {
+        print!(
+            "\nFailed to verify share :(\n\nPress any key to \
+            try again ..."
+        );
+        io::stdout().flush()?;
+
+        // wait for a keypress / 1 byte from stdin
+        let _ = io::stdin().read(&mut [0u8]).unwrap();
+        Ok(false)
     }
 }
