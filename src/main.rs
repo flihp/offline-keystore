@@ -388,7 +388,11 @@ fn do_ceremony<P: AsRef<Path>>(
         );
 
         let secret_writer = secret_writer::get_writer(output)?;
-        for (i, share) in shares.as_ref().iter().enumerate() {
+        for (i, share) in
+            <Zeroizing<Vec<Share>> as AsRef<Vec<Share>>>::as_ref(&shares)
+                .iter()
+                .enumerate()
+        {
             let share_num = i + 1;
             println!(
                 "When key custodian {num} is ready, press enter to print share \
@@ -794,7 +798,13 @@ fn main() -> Result<()> {
 
                     let secret_writer =
                         secret_writer::get_writer(secret_method)?;
-                    for (i, share) in shares.as_ref().iter().enumerate() {
+                    //for (i, share) in shares.as_ref().iter().enumerate() {
+                    for (i, share) in <Zeroizing<Vec<Share>> as AsRef<
+                        Vec<Share>,
+                    >>::as_ref(&shares)
+                    .iter()
+                    .enumerate()
+                    {
                         let share_num = i + 1;
                         println!(
                             "When key custodian {num} is ready, press enter to print share \
@@ -925,7 +935,8 @@ fn main() -> Result<()> {
                     )?;
 
                     let verifier = fs::read_to_string(verifier)?;
-                    let verifier: Verifier = serde_json::from_str(&verifier)?;
+                    let verifier: Vec<Verifier> =
+                        serde_json::from_str(&verifier)?;
                     let share_itr = secret_reader::get_share_reader(
                         share_method,
                         verifier,

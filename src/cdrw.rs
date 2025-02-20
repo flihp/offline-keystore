@@ -5,6 +5,8 @@
 use anyhow::{anyhow, Context, Result};
 use log::{debug, warn};
 use std::{
+    // todo: required?
+    convert::AsRef,
     fs,
     ops::Deref,
     os::unix::fs::FileTypeExt,
@@ -185,7 +187,15 @@ impl CdWriter {
 
     pub fn write_share(&self, data: &Zeroizing<Share>) -> Result<()> {
         debug!("Writing share: {:?}", data.deref());
-        self.iso_writer.add("share", data.deref().as_ref())
+        // TODO: serialize the share to JSON
+        //
+        // unpacking the Share instance inorder:
+        // `deref` gets us the inner vsss_rs::DefaultShare
+        // `value` gets us the inner IdentifierPrimeField<Scalar>
+        // `as_ref()` gets us the Scalar
+        // `to_bytes()` turns the Scalar into the &[u8] we write to disk
+        self.iso_writer
+            .add("share", &data.deref().value.as_ref().to_bytes())
     }
 
     /// Burn data to CD & eject disk when done.

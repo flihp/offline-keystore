@@ -189,7 +189,18 @@ impl SecretWriter for PrinterSecretWriter {
             0, // Set horizontal tab stops
         ])?;
 
+        // TODO: serialize the share to JSON
+        //
+        // unpacking the Share instance inorder:
+        // `deref` gets us the inner vsss_rs::DefaultShare
+        // `value` gets us the inner IdentifierPrimeField<Scalar>
+        // `as_ref()` gets us the Scalar
+        // `to_bytes()` turns the Scalar into the &[u8] we write to disk
         for (i, chunk) in share
+            .deref()
+            .value
+            .as_ref()
+            .to_bytes()
             .encode_hex::<String>()
             .as_bytes()
             .chunks(8)
@@ -279,7 +290,7 @@ impl SecretWriter for IsoSecretWriter {
     ) -> Result<()> {
         let writer = IsoWriter::new()?;
 
-        writer.add("share", share.as_ref())?;
+        writer.add("share", &share.deref().value.as_ref().to_bytes())?;
         writer.to_iso(
             self.output_dir
                 .join(format!("share_{}-of-{}.iso", index, limit)),
