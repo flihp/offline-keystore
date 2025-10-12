@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+
+set -eou pipefail
+
+lp -o PageSize=62x29mm <<< "Property of Oxide
+Computer Co.
+
+If found, contact
+security@oxide.computer"
