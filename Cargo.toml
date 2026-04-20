@@ -8,7 +8,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.102"
-clap = { version = "4.5.41", features = ["derive", "env"] }
+clap = { version = "4.6.1", features = ["derive", "env"] }
 const_format = "0.2.36"
 env_logger = "0.10.2"
 fs_extra = "1.3.0"
